@@ -32,6 +32,7 @@ class AISignalEngine:
         self.model = GradientBoostingClassifier(random_state=42)
         self.last_trained_at: Optional[datetime] = None
         self.is_trained = False
+        self.last_confidence = 0.0
         self._load_model()
 
     # This function trains the Gradient Boosting model on the most recent 252 trading days.
@@ -60,13 +61,20 @@ class AISignalEngine:
 
     # This function predicts long, short, or flat and only trades when confidence is above 60%.
     def predict(self, market_data: pd.DataFrame) -> int:
+        signal, _ = self.predict_with_confidence(market_data)
+        return signal
+
+    # This function predicts long, short, or flat and also returns the confidence score.
+    def predict_with_confidence(self, market_data: pd.DataFrame) -> tuple[int, float]:
         if not self.is_trained:
-            return 0
+            self.last_confidence = 0.0
+            return 0, 0.0
 
         prepared_data = self._prepare_market_data(market_data)
         features = self._build_features(prepared_data).dropna()
         if features.empty:
-            return 0
+            self.last_confidence = 0.0
+            return 0, 0.0
 
         latest_features = features.iloc[[-1]]
         probabilities = self.model.predict_proba(latest_features)[0]
@@ -75,10 +83,12 @@ class AISignalEngine:
         best_index = int(np.argmax(probabilities))
         best_confidence = float(probabilities[best_index])
         best_class = int(classes[best_index])
+        self.last_confidence = best_confidence
 
         if best_confidence <= CONFIDENCE_THRESHOLD:
-            return 0
-        return 1 if best_class > 0 else -1
+            return 0, best_confidence
+        signal = 1 if best_class > 0 else -1
+        return signal, best_confidence
 
     # This function tells us if the model is older than 30 days and should be retrained.
     def retrain_needed(self, now: Optional[datetime] = None) -> bool:
