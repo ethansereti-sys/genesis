@@ -79,6 +79,9 @@ class RiskManager:
                 f"(limit: {WATCHDOG_NO_SIGNAL_MINUTES} minutes). "
                 "Liquidating all positions."
             )
+            # Reset the watchdog timer after the forced flatten so the strategy
+            # can continue evaluating new signals on later bars.
+            self.watchdog_start_time = self.algorithm.Time
             return False
 
         return True

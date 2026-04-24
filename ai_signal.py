@@ -22,7 +22,20 @@ from sklearn.ensemble import GradientBoostingClassifier
 TRAINING_LOOKBACK_DAYS = 252
 RETRAIN_AFTER_DAYS = 30
 CONFIDENCE_THRESHOLD = 0.60
-MODEL_PATH = Path(__file__).resolve().parent / "models" / "gradient_boosting_signal.pkl"
+
+
+# This function chooses a model file path that works in local and cloud runtimes.
+def _resolve_default_model_path() -> Path:
+    """Return a safe default model path in both local and cloud runtimes."""
+    try:
+        base_dir = Path(__file__).resolve().parent
+    except NameError:
+        # Some hosted runners execute modules where __file__ is unavailable.
+        base_dir = Path.cwd()
+    return base_dir / "models" / "gradient_boosting_signal.pkl"
+
+
+MODEL_PATH = _resolve_default_model_path()
 
 
 class AISignalEngine:
@@ -171,14 +184,18 @@ class AISignalEngine:
 
     # This function saves the trained model and metadata to disk so restarts keep the AI state.
     def _save_model(self) -> None:
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "model": self.model,
-            "last_trained_at": self.last_trained_at,
-            "is_trained": self.is_trained,
-        }
-        with self.model_path.open("wb") as model_file:
-            pickle.dump(payload, model_file)
+        try:
+            self.model_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "model": self.model,
+                "last_trained_at": self.last_trained_at,
+                "is_trained": self.is_trained,
+            }
+            with self.model_path.open("wb") as model_file:
+                pickle.dump(payload, model_file)
+        except OSError:
+            # If the runtime file system is read-only, skip persistence without crashing.
+            return
 
     # This function loads a previously saved model from disk when the bot starts up.
     def _load_model(self) -> None:
@@ -206,11 +223,15 @@ class AISignalEngine:
                 self.last_trained_at = trained_at
 
 
-default_engine = AISignalEngine()
+default_engine: Optional[AISignalEngine] = None
 
 
 # This function keeps backward compatibility with the existing bot scaffold API.
 def generate_signal(market_snapshot: Dict[str, Any]) -> int:
+    global default_engine
+    if default_engine is None:
+        default_engine = AISignalEngine()
+
     history = market_snapshot.get("history")
     if not isinstance(history, pd.DataFrame):
         return 0

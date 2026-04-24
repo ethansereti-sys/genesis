@@ -51,9 +51,9 @@ class FuturesBot(QCAlgorithm):
     def OnData(self, data: Slice) -> None:
         return
 
-    # This function sends webhook notifications after orders fill.
+    # This function handles filled orders, sends webhooks, and manages bracket-exit safety.
     def OnOrderEvent(self, order_event: OrderEvent) -> None:
-        if order_event.Status not in (OrderStatus.Filled, OrderStatus.PartiallyFilled):
+        if order_event.Status != OrderStatus.Filled:
             return
 
         payload = self.order_webhook_payloads.get(order_event.OrderId)
@@ -66,11 +66,37 @@ class FuturesBot(QCAlgorithm):
                 "stopLoss": None,
                 "takeProfit": None,
             }
-
         self._send_webhook(payload)
+        self.order_webhook_payloads.pop(order_event.OrderId, None)
 
-        if order_event.Status == OrderStatus.Filled and order_event.OrderId in self.order_webhook_payloads:
-            self.order_webhook_payloads.pop(order_event.OrderId, None)
+        # If a stop or target fills, cancel the sibling exit order to avoid double exits.
+        for state in self.future_states.values():
+            stop_ticket = state.get("stop_ticket")
+            take_ticket = state.get("take_ticket")
+            stop_id = stop_ticket.OrderId if stop_ticket is not None else None
+            take_id = take_ticket.OrderId if take_ticket is not None else None
+
+            if order_event.OrderId == stop_id:
+                if take_ticket is not None and take_ticket.Status in (
+                    OrderStatus.New,
+                    OrderStatus.Submitted,
+                    OrderStatus.PartiallyFilled,
+                ):
+                    take_ticket.Cancel("Stop filled, cancel take profit")
+                state["stop_ticket"] = None
+                state["take_ticket"] = None
+                break
+
+            if order_event.OrderId == take_id:
+                if stop_ticket is not None and stop_ticket.Status in (
+                    OrderStatus.New,
+                    OrderStatus.Submitted,
+                    OrderStatus.PartiallyFilled,
+                ):
+                    stop_ticket.Cancel("Target filled, cancel stop loss")
+                state["stop_ticket"] = None
+                state["take_ticket"] = None
+                break
 
     # This function adds a continuous future contract and wires a 5-minute bar handler.
     def _add_continuous_future(self, ticker: str, future_type) -> Symbol:
@@ -138,8 +164,9 @@ class FuturesBot(QCAlgorithm):
             self.Debug(f"[AI] Prediction failed for {state['ticker']}: {error}")
             return
 
-        if signal in (1, -1):
-            self.risk_manager.record_signal_fired()
+        # Record every decision timestamp so the account-level watchdog sees activity
+        # from both ES and NQ rather than only directional actions.
+        self.risk_manager.record_signal_fired()
 
         self._log_trade_decision(state["ticker"], signal, confidence)
         self._apply_signal_to_position(state, signal, bar)
