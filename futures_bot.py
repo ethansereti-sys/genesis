@@ -63,8 +63,9 @@ class FuturesBot(QCAlgorithm):
                 "ticker": order_event.Symbol.Value,
                 "action": action,
                 "quantity": abs(int(order_event.FillQuantity)),
-                "stopLoss": None,
-                "takeProfit": None,
+                "orderType": "market",
+                "stopLoss": self.stop_loss_points,
+                "takeProfit": self.take_profit_points,
             }
         self._send_webhook(payload)
         self.order_webhook_payloads.pop(order_event.OrderId, None)
@@ -270,24 +271,24 @@ class FuturesBot(QCAlgorithm):
             state["ticker"],
             action,
             1,
-            stop_price,
-            take_profit_price,
+            self.stop_loss_points,
+            self.take_profit_points,
         )
         self._register_order_webhook_payload(
             stop_ticket.OrderId,
             state["ticker"],
             "sell" if direction > 0 else "buy",
             1,
-            stop_price,
-            take_profit_price,
+            self.stop_loss_points,
+            self.take_profit_points,
         )
         self._register_order_webhook_payload(
             take_ticket.OrderId,
             state["ticker"],
             "sell" if direction > 0 else "buy",
             1,
-            stop_price,
-            take_profit_price,
+            self.stop_loss_points,
+            self.take_profit_points,
         )
 
     # This function cancels any old stop/target tickets so stale exits do not fire.
@@ -307,15 +308,16 @@ class FuturesBot(QCAlgorithm):
         ticker: str,
         action: str,
         quantity: int,
-        stop_loss: Optional[float],
-        take_profit: Optional[float],
+        stop_loss_points: Optional[float],
+        take_profit_points: Optional[float],
     ) -> None:
         self.order_webhook_payloads[order_id] = {
             "ticker": ticker,
             "action": action,
             "quantity": quantity,
-            "stopLoss": stop_loss,
-            "takeProfit": take_profit,
+            "orderType": "market",
+            "stopLoss": stop_loss_points,
+            "takeProfit": take_profit_points,
         }
 
     # This function sends the trade payload to TraderPost as JSON when a webhook URL exists.
@@ -325,7 +327,26 @@ class FuturesBot(QCAlgorithm):
         try:
             self.Notify.Web(TRADERSPOST_WEBHOOK_URL, json.dumps(payload))
         except Exception as error:
-            self.Debug(f"[WEBHOOK] Failed to send payload: {error}")
+            # Network/timeout/webhook errors are logged and ignored so trading keeps running.
+            self.Debug(f"[WEBHOOK] Failed to send payload: {error} | payload={payload}")
+
+    # This function lets you manually send a test webhook message without placing a trade.
+    def SendTestTradersPostSignal(
+        self,
+        ticker: str = "ES",
+        action: str = "buy",
+        quantity: int = 1,
+    ) -> None:
+        payload = {
+            "ticker": ticker,
+            "action": action,
+            "quantity": quantity,
+            "orderType": "market",
+            "stopLoss": self.stop_loss_points,
+            "takeProfit": self.take_profit_points,
+        }
+        self.Debug(f"[WEBHOOK] Sending manual test payload: {payload}")
+        self._send_webhook(payload)
 
     # This function logs all required decision fields for auditability and debugging.
     def _log_trade_decision(self, ticker: str, signal: int, confidence: float) -> None:

@@ -17,8 +17,8 @@ PROFIT_TARGET = 3000
 EOD_FLATTEN_HOUR = 15
 EOD_FLATTEN_MINUTE = 55
 
-# Optional webhook for TraderPost integration (left blank for now)
-TRADERSPOST_WEBHOOK_URL = ""
+# TraderPost webhook URL for live order relay.
+TRADERSPOST_WEBHOOK_URL = "[PASTE YOUR TRADERSPOST WEBHOOK URL HERE]"
 
 # Safety watchdog: flatten if no signal appears within this many minutes.
 WATCHDOG_NO_SIGNAL_MINUTES = 60
