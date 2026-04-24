@@ -37,8 +37,13 @@ class FuturesBot(QCAlgorithm):
         if self.future not in data.Bars:
             return
 
+        history = self._build_market_history()
+        if history is None:
+            return
+
         market_snapshot = {
             "price": data.Bars[self.future].Close,
+            "history": history,
         }
         signal = generate_signal(market_snapshot)
         if signal in (1, -1):
@@ -48,3 +53,24 @@ class FuturesBot(QCAlgorithm):
             self.MarketOrder(self.future, 1)
         elif signal == -1 and self.Portfolio[self.future].Quantity >= 0:
             self.MarketOrder(self.future, -1)
+
+    def _build_market_history(self):
+        # Pull enough daily bars so the model can compute indicators and train.
+        history = self.History(self.future, 320, Resolution.Daily)
+        if history.empty:
+            return None
+
+        if "symbol" in getattr(history.index, "names", []):
+            history = history.xs(self.future, level="symbol")
+
+        normalized_columns = {str(col).lower() for col in history.columns}
+        expected_columns = {"close", "volume"}
+        if not expected_columns.issubset(normalized_columns):
+            return None
+        selected = history.rename(
+            columns={
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        return selected[["close", "volume"]]
