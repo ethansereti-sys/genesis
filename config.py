@@ -19,3 +19,6 @@ EOD_FLATTEN_MINUTE = 55
 
 # Optional webhook for TraderPost integration (left blank for now)
 TRADERSPOST_WEBHOOK_URL = ""
+
+# Safety watchdog: flatten if no signal appears within this many minutes.
+WATCHDOG_NO_SIGNAL_MINUTES = 60
