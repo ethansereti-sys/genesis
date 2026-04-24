@@ -282,6 +282,15 @@ class TradeReasoningEngine:
         self._store_reason(summary)
         return summary
 
+    # This function extracts a one-line plain-English summary from an entry reasoning record.
+    def extract_entry_summary_sentence(self, entry_reason_record: Dict[str, Any]) -> str:
+        reasoning = entry_reason_record.get("reasoning", {})
+        verdict_section = reasoning.get("CONFIDENCE VERDICT", {})
+        sentence = str(verdict_section.get("summary") or "").strip()
+        if sentence:
+            return sentence
+        return "The bot did not receive enough context to generate a detailed one-line summary."
+
     # This function builds human-friendly lines explaining which technical signals fired.
     def _build_signal_summary_lines(
         self,

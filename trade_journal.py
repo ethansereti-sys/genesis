@@ -96,14 +96,15 @@ class TradeJournal:
         stop_loss_level: float,
         take_profit_level: float,
         active_parameter_set: Dict[str, Any],
+        trade_id: Optional[str] = None,
     ) -> str:
         direction_lower = direction.lower()
         if direction_lower not in ("long", "short"):
             raise ValueError("direction must be either 'long' or 'short'")
 
-        trade_id = str(uuid.uuid4())
+        resolved_trade_id = str(trade_id) if trade_id else str(uuid.uuid4())
         trade = {
-            "trade_id": trade_id,
+            "trade_id": resolved_trade_id,
             "status": "open",
             "entry_time": _to_iso(entry_time),
             "instrument": instrument,
@@ -135,9 +136,9 @@ class TradeJournal:
 
         with self._lock:
             self.trades.append(trade)
-            self.open_trades[trade_id] = trade
+            self.open_trades[resolved_trade_id] = trade
             self._save_trades()
-        return trade_id
+        return resolved_trade_id
 
     # This function records the close details and final outcome for a trade.
     def record_trade_close(
