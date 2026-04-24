@@ -3,7 +3,7 @@
 import json
 import uuid
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -52,6 +52,7 @@ class FuturesBot(QCAlgorithm):
         self.order_webhook_payloads: Dict[int, Dict[str, Any]] = {}
         self.order_contexts: Dict[int, Dict[str, Any]] = {}
         self.last_forced_exit_reason = "manual"
+        self._live_params_lock = threading.Lock()
 
         # Subscribe to ES and NQ for signal generation.
         es_symbol = self._add_continuous_future("ES", Futures.Indices.SP500EMini)
@@ -142,13 +143,22 @@ class FuturesBot(QCAlgorithm):
 
         exit_reason = self._infer_exit_reason(state, order_event)
         trade_id = str(state["active_trade_id"])
-        closed_trade = self.trade_journal.record_trade_close(
-            trade_id=trade_id,
-            exit_time=self.Time,
-            exit_price=float(order_event.FillPrice),
-            exit_reason=exit_reason,
-            point_value=self._point_value_for_ticker(state["ticker"]),
-        )
+        try:
+            closed_trade = self.trade_journal.record_trade_close(
+                trade_id=trade_id,
+                exit_time=self.Time,
+                exit_price=float(order_event.FillPrice),
+                exit_reason=exit_reason,
+                point_value=self._point_value_for_ticker(state["ticker"]),
+            )
+        except Exception as error:
+            self.Debug(f"[JOURNAL] Failed to record trade close for {trade_id}: {error}")
+            state["active_trade_id"] = None
+            state["active_trade_direction"] = None
+            state["active_trade_entry_price"] = None
+            state["active_trade_entry_time"] = None
+            state["active_trade_reason_summary"] = ""
+            return
 
         thesis_matched = bool(closed_trade.get("winner"))
         market_during_trade = {
@@ -781,13 +791,15 @@ class FuturesBot(QCAlgorithm):
 
     # This function returns live parameter values for background optimization callbacks.
     def _get_live_parameters(self) -> Dict[str, float]:
-        return dict(self.live_parameters)
+        with self._live_params_lock:
+            return dict(self.live_parameters)
 
     # This function applies promoted parameters safely to live bot settings.
     def _apply_live_parameters(self, parameters: Dict[str, float]) -> None:
-        self.live_parameters = dict(parameters)
-        self.stop_loss_points = float(parameters.get("stop_loss_points", self.stop_loss_points))
-        self.take_profit_points = float(parameters.get("take_profit_points", self.take_profit_points))
+        with self._live_params_lock:
+            self.live_parameters = dict(parameters)
+            self.stop_loss_points = float(parameters.get("stop_loss_points", self.stop_loss_points))
+            self.take_profit_points = float(parameters.get("take_profit_points", self.take_profit_points))
         self.Debug(f"[PARAMS] Applied promoted live parameters: {self.live_parameters}")
 
     # This function returns primary mapped symbol if available.
@@ -884,7 +896,7 @@ class FuturesBot(QCAlgorithm):
 
     # This function returns recent headlines relevant for a specific instrument.
     def _recent_relevant_headlines(self, ticker: str) -> List[str]:
-        rows = list(self.news_engine.news_log[-50:])
+        rows = self.news_engine.get_recent_headlines(limit=50)
         headlines: List[str] = []
         for row in reversed(rows):
             text = str(row.get("headline", ""))
@@ -907,9 +919,9 @@ class FuturesBot(QCAlgorithm):
         return [window.name]
 
     # This function fetches closed trades for the requested UTC day.
-    def _closed_trades_for_day(self, day_utc_date: datetime.date) -> List[Dict[str, Any]]:
+    def _closed_trades_for_day(self, day_utc_date: date) -> List[Dict[str, Any]]:
         trades: List[Dict[str, Any]] = []
-        for trade in self.trade_journal.trades:
+        for trade in self.trade_journal.snapshot_trades():
             if trade.get("status") != "closed":
                 continue
             exit_time = trade.get("exit_time")

@@ -8,6 +8,7 @@ signals mattered most, and what lessons were learned each day.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,6 +47,7 @@ class TradeReasoningEngine:
         self.reasons_log_path = (
             Path(reasons_log_path) if reasons_log_path else _resolve_path("trade_reasons.log")
         )
+        self._lock = threading.Lock()
         self.reasons: List[Dict[str, Any]] = []
         self._load_reasons()
 
@@ -488,9 +490,10 @@ class TradeReasoningEngine:
 
     # This function stores one reasoning record and persists JSON + text logs.
     def _store_reason(self, record: Dict[str, Any]) -> None:
-        self.reasons.append(record)
-        self._save_json()
-        self._append_text_log(record)
+        with self._lock:
+            self.reasons.append(record)
+            self._save_json()
+            self._append_text_log(record)
 
     # This function loads existing JSON reasoning records from disk.
     def _load_reasons(self) -> None:

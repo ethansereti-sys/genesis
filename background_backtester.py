@@ -70,6 +70,7 @@ class BackgroundBacktester:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._pending_cycle_requested = True
 
         self.cycles_run = 0
         self.last_backtest_time: Optional[datetime] = None
@@ -123,6 +124,17 @@ class BackgroundBacktester:
     def run_cycle_now(self) -> None:
         self._run_cycle()
 
+    # This function executes one queued cycle request from the main algorithm thread.
+    def process_pending_cycle(self) -> bool:
+        with self._lock:
+            should_run = self._pending_cycle_requested
+            if should_run:
+                self._pending_cycle_requested = False
+        if not should_run:
+            return False
+        self._run_cycle()
+        return True
+
     # This function provides default live parameters when no callback is supplied.
     def _default_get_live_parameters(self) -> Dict[str, float]:
         return {
@@ -141,24 +153,15 @@ class BackgroundBacktester:
     # This function runs a continuous 6-hour loop in a daemon thread.
     def _run_forever(self) -> None:
         while not self._stop_event.is_set():
-            loop_start = datetime.now(timezone.utc)
-            self._run_cycle()
-
-            elapsed = datetime.now(timezone.utc) - loop_start
-            sleep_seconds = max(0.0, (self.cycle_interval - elapsed).total_seconds())
+            with self._lock:
+                self._pending_cycle_requested = True
+            sleep_seconds = max(0.0, self.cycle_interval.total_seconds())
             self._stop_event.wait(timeout=sleep_seconds)
 
     # This function executes one full cycle: fetch data, test variations, and evaluate upgrades.
     def _run_cycle(self) -> None:
         cycle_id = None
         try:
-            if not self._can_call_lean_api_safely():
-                self.algorithm.Debug(
-                    "[BG-BACKTEST] Skipping cycle because Lean API access from this thread is unsafe. "
-                    "Call run_cycle_now() from the main algorithm thread or wire a scheduler callback."
-                )
-                return
-
             with self._lock:
                 self.cycles_run += 1
                 cycle_id = self.cycles_run
@@ -193,14 +196,6 @@ class BackgroundBacktester:
             self._attempt_promotion_if_safe()
         except Exception as error:
             self.algorithm.Debug(f"[BG-BACKTEST] Cycle failed safely: {error}")
-
-    # This function checks whether it is safe to use Lean API calls from the current thread.
-    def _can_call_lean_api_safely(self) -> bool:
-        # Lean object access is generally expected on the algorithm thread.
-        # Running directly from a worker thread can cause undefined behavior.
-        if threading.current_thread() is threading.main_thread():
-            return True
-        return False
 
     # This function fetches and normalizes the last 60 days of OHLCV data for ES and NQ.
     def _fetch_historical_data(self) -> Dict[str, pd.DataFrame]:
@@ -495,49 +490,52 @@ class BackgroundBacktester:
         self, result: BacktestResult, improvement: float, cycle_id: int
     ) -> None:
         signature = self._parameter_signature(result.parameters)
-        tracker = self._candidate_tracker.setdefault(
-            signature,
-            {
-                "parameters": result.parameters,
-                "cycles": set(),
-                "best_improvement": 0.0,
-                "latest_result": result,
-            },
-        )
-        tracker["cycles"].add(cycle_id)
-        tracker["best_improvement"] = max(float(tracker["best_improvement"]), float(improvement))
-        tracker["latest_result"] = result
+        with self._lock:
+            tracker = self._candidate_tracker.setdefault(
+                signature,
+                {
+                    "parameters": result.parameters,
+                    "cycles": set(),
+                    "best_improvement": 0.0,
+                    "latest_result": result,
+                },
+            )
+            tracker["cycles"].add(cycle_id)
+            tracker["best_improvement"] = max(float(tracker["best_improvement"]), float(improvement))
+            tracker["latest_result"] = result
 
-        if len(tracker["cycles"]) >= 3:
-            self._pending_upgrade_key = signature
+            if len(tracker["cycles"]) >= 3:
+                self._pending_upgrade_key = signature
 
     # This function decides whether a pending candidate can be safely promoted to live settings.
     def _attempt_promotion_if_safe(self) -> None:
-        if self._pending_upgrade_key is None:
-            return
+        with self._lock:
+            pending_key = self._pending_upgrade_key
+            if pending_key is None:
+                return
+            tracker = self._candidate_tracker.get(pending_key)
+            if tracker is None:
+                self._pending_upgrade_key = None
+                return
+            result: BacktestResult = tracker["latest_result"]
+            if len(tracker["cycles"]) < 3:
+                return
+            new_params = dict(tracker["parameters"])
+            improvement = float(tracker["best_improvement"])
 
-        tracker = self._candidate_tracker.get(self._pending_upgrade_key)
-        if tracker is None:
-            self._pending_upgrade_key = None
-            return
-
-        result: BacktestResult = tracker["latest_result"]
-        if len(tracker["cycles"]) < 3:
-            return
         if not self._passes_prop_risk_limits(result):
             return
         if not self._is_flat_for_minimum_minutes(10):
             return
 
         old_params = self.get_live_parameters()
-        new_params = tracker["parameters"]
-        improvement = tracker["best_improvement"]
 
         try:
             self.apply_live_parameters(new_params)
-            self.current_live_parameters = dict(new_params)
-            self._pending_upgrade_key = None
-            self._candidate_tracker.pop(self._parameter_signature(new_params), None)
+            with self._lock:
+                self.current_live_parameters = dict(new_params)
+                self._pending_upgrade_key = None
+                self._candidate_tracker.pop(self._parameter_signature(new_params), None)
 
             self.algorithm.Debug(
                 "[BG-BACKTEST] Auto-promoted parameters at "

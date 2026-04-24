@@ -633,10 +633,16 @@ class NewsEngine:
     def _save_news_log(self) -> None:
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot = list(self.news_log[-500:])
             with self.log_path.open("w", encoding="utf-8") as handle:
-                json.dump(self.news_log[-500:], handle, indent=2)
+                json.dump(snapshot, handle, indent=2)
         except OSError as error:
             self._log_debug(f"[NEWS] Could not write news_log.json: {error}")
+
+    # This function returns the most recent headlines in a thread-safe snapshot.
+    def get_recent_headlines(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.news_log[-max(1, int(limit)) :]]
 
     # This function logs debug output through algorithm logger when available.
     def _log_debug(self, message: str) -> None:
